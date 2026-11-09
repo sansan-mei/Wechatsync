@@ -25,7 +25,7 @@ async function main() {
     await context.route('**/*', route => ['GET', 'HEAD'].includes(route.request().method()) ? route.continue() : route.abort())
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 })
     assert(worker.url().startsWith('chrome-extension://'))
-    let initialCache = ''
+    let initialCache = JSON.stringify({ value: { title: '旧标题', content: '', extra: '保留的站点字段' }, expires: Date.now() + 86400000 })
     const runtime = {
       type: 'extension',
       // 仅认证使用夹具；缓存写入、异常返回、tab 查询/创建均使用原生 Chrome API。
@@ -76,11 +76,11 @@ async function main() {
     assert(protectedResult.error.includes('已有本地草稿'), protectedResult.error)
     assert.equal(await page.evaluate(() => localStorage.getItem('add_post')), initialCache)
     await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({
-      nativeChromeInjection: true, emptyStringSyncPassed: true, existingDraftPreserved: true,
+      nativeChromeInjection: true, emptyContentSyncPassed: true, existingDraftPreserved: true,
       specificErrorReturned: protectedResult.error, titleRestored: true, cachedMarkdownVerified: true,
       realAccountAuthTested: false, serverWritesAllowed: false,
     }, null, 2))
-    console.log('PASS: 原生 chrome.scripting 注入；空字符串可同步、真实编辑器恢复内容、旧稿不覆盖且返回具体原因。未验证真实登录，禁止网络写入。')
+    console.log('PASS: 原生 chrome.scripting 注入；正文为空可同步且不受 expires 影响，真实编辑器恢复内容，已有正文不覆盖。未验证真实登录，禁止网络写入。')
   } finally {
     if (page && !page.isClosed()) {
       await fs.writeFile(path.join(output, 'page.html'), await page.content()).catch(() => {})
