@@ -11,7 +11,7 @@ async function main() {
   await fs.mkdir(fixture, { recursive: true })
   await fs.writeFile(path.join(fixture, 'manifest.json'), JSON.stringify({
     manifest_version: 3, name: 'Codefather offscreen spike', version: '1.0',
-    permissions: ['offscreen', 'tabs'], host_permissions: ['https://www.codefather.cn/*'],
+    permissions: ['offscreen', 'tabs'], host_permissions: ['https://www.codefather.cn/*', 'https://api.codefather.cn/*'],
     background: { service_worker: 'background.js' },
     content_scripts: [{ matches: ['https://www.codefather.cn/*'], js: ['content.js'], all_frames: true, run_at: 'document_start' }],
   }))
@@ -47,10 +47,11 @@ chrome.runtime.onInstalled.addListener(() => {});
 `)
   await fs.writeFile(path.join(fixture, 'content.js'), `
 if (window.top !== window) {
-  chrome.runtime.sendMessage({type: 'PROBE_GET'}, (payload) => {
+  chrome.runtime.sendMessage({type: 'PROBE_GET'}, async (payload) => {
     if (!payload) return;
     let result;
     try {
+      await fetch('https://api.codefather.cn/api/user/get/login', {credentials: 'include'});
       localStorage.setItem('add_post', payload.initial);
       const previous = localStorage.getItem('add_post');
       if (previous && JSON.parse(previous)?.value?.content?.trim()) {
@@ -71,7 +72,16 @@ if (window.top !== window) {
   })
   let page
   try {
-    await context.route('**/*', route => ['GET', 'HEAD'].includes(route.request().method()) ? route.continue() : route.abort())
+    const probeCookie = 'wechatsync_iframe_cookie_probe=transport-only-fixture'
+    let iframeCookieSent = false
+    await context.addCookies([{ name: 'wechatsync_iframe_cookie_probe', value: 'transport-only-fixture', domain: '.codefather.cn', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }])
+    await context.route('**/*', async route => {
+      if (route.request().url().startsWith('https://api.codefather.cn/api/user/get/login')) {
+        const headers = await route.request().allHeaders()
+        iframeCookieSent ||= (headers.cookie || '').includes(probeCookie)
+      }
+      return ['GET', 'HEAD'].includes(route.request().method()) ? route.continue() : route.abort()
+    })
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 })
     const value = { title: 'Wechatsync 无可见网页同步验证', content: '# 隐藏页面缓存验证\n\nwechatsync-offscreen-marker' }
     const initial = JSON.stringify({value: {title: '旧标题', content: ''}, expires: Date.now() + 86400000})
@@ -82,6 +92,7 @@ if (window.top !== window) {
     assert.equal(JSON.parse(hidden.raw).value.content, value.content)
     const offscreenAfter = await worker.evaluate(() => chrome.runtime.getContexts({contextTypes: ['OFFSCREEN_DOCUMENT']}))
     assert.equal(offscreenAfter.length, 0, 'offscreen must be closed after write')
+    assert.equal(iframeCookieSent, true, 'iframe request must reuse the existing HttpOnly cookie')
 
     // 写入完成后才模拟用户主动打开编辑器，不属于隐藏同步过程。
     page = await context.newPage()
@@ -100,7 +111,7 @@ if (window.top !== window) {
     assert.equal(finalContexts.length, 0)
     await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({
       offscreenWritePassed: true, noVisibleTabsCreatedDuringSync: true, firstPartyEditorRestored: true,
-      oldContentPreserved: true, offscreenCleanedUp: true,
+      oldContentPreserved: true, offscreenCleanedUp: true, existingHttpOnlyCookieSentFromIframe: iframeCookieSent,
       realAccountAuthTested: false, serverWritesAllowed: false,
     }, null, 2))
     console.log('PASS: offscreen 隐藏 iframe 写入与网站首方缓存一致；同步过程未新增可见标签页；事后主动打开编辑器成功恢复内容；旧稿保护与清理通过。')
