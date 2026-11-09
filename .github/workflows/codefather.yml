@@ -1,36 +1,32 @@
-name: Codefather adapter
+name: Codefather verification
 
 on:
   push:
-    branches: ['feat/codefather-adapter']
-  pull_request:
-    paths:
-      - 'packages/core/**'
-      - 'packages/extension/**'
-      - 'scripts/verify-codefather.cjs'
-      - '.github/workflows/codefather.yml'
-      - 'pnpm-lock.yaml'
-      - 'tsconfig.json'
+    branches: ['ci/verify-codefather']
   workflow_dispatch:
-    inputs:
-      browser_smoke:
-        description: '匿名验证真实站点本地草稿恢复（禁止网络写入）'
-        type: boolean
-        default: true
 
 permissions:
   contents: read
-
-concurrency:
-  group: codefather-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: 读取独立验证脚本
+        uses: actions/checkout@v4
+      - name: 保留烟测入口
+        run: cp scripts/verify-codefather.cjs "$RUNNER_TEMP/verify-codefather.cjs"
+      - name: 检出实际 PR 分支
+        uses: actions/checkout@v4
+        with:
+          ref: feat/codefather-adapter
+      - name: 记录实际验证提交并恢复隔离脚本
+        id: source
+        run: |
+          git rev-parse HEAD | tee "$RUNNER_TEMP/codefather-source-sha.txt"
+          mkdir -p scripts
+          cp "$RUNNER_TEMP/verify-codefather.cjs" scripts/verify-codefather.cjs
       - uses: pnpm/action-setup@v4
         with:
           version: 10.11.0
@@ -46,22 +42,22 @@ jobs:
         run: pnpm --filter @wechatsync/core typecheck
       - name: 构建核心
         run: pnpm --filter @wechatsync/core build
-      - name: 构建扩展（含注册检查）
+      - name: 构建扩展
         run: pnpm --filter @wechatsync/extension build
       - name: 安装隔离的烟测浏览器
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.browser_smoke)
         run: |
           npm install --prefix "$RUNNER_TEMP/codefather-browser" --no-audit --no-fund playwright@1.56.1
           "$RUNNER_TEMP/codefather-browser/node_modules/.bin/playwright" install --with-deps chromium
       - name: 验证真实编辑器恢复本地草稿（不发布）
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.browser_smoke)
         env:
           PLAYWRIGHT_MODULE: ${{ runner.temp }}/codefather-browser/node_modules/playwright
         run: node scripts/verify-codefather.cjs
-      - name: 保存烟测证据
-        if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.browser_smoke))
+      - name: 保存验证提交与烟测证据
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: codefather-browser-evidence
-          path: codefather-smoke-output/
+          path: |
+            codefather-smoke-output/
+            ${{ runner.temp }}/codefather-source-sha.txt
           if-no-files-found: ignore
